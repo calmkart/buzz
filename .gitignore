@@ -5,6 +5,9 @@ build/
 .coverage*
 !.coveragerc
 .env
+.env.*
+.token/
+.planning/
 .DS_Store
 htmlcov/
 coverage.xml

@@ -7,6 +7,7 @@ from platformdirs import user_cache_dir
 
 from buzz.locale import _
 from buzz.settings.settings import Settings
+from buzz.meeting_translator import meeting_mode_enabled
 
 import os
 
@@ -22,9 +23,13 @@ class PresentationWindow(QWidget):
         self.window_style = ""
         self.setWindowTitle(_("Live Transcript Presentation"))
         self.setWindowFlag(Qt.WindowType.Window)
+        if meeting_mode_enabled():
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
 
         # Window size
         self.resize(800, 600)
+        if meeting_mode_enabled():
+            self.resize(900, 320)
 
         # Create layout
         layout = QVBoxLayout(self)
@@ -185,5 +190,4 @@ class PresentationWindow(QWidget):
         os.makedirs(cache_dir, exist_ok=True)
 
         return os.path.join(cache_dir, "presentation_window_style.css")
-
 

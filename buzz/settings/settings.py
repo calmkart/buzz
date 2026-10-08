@@ -2,10 +2,11 @@ import enum
 import typing
 import logging
 import uuid
+import os
 
 from PyQt6.QtCore import QSettings
 
-APP_NAME = "Buzz"
+APP_NAME = os.environ.get("BUZZ_APP_NAME", "Buzz")
 
 
 class Settings:
@@ -14,6 +15,7 @@ class Settings:
         self.settings.sync()
 
     class Key(enum.Enum):
+        MEETING_PROFILE_INITIALIZED = "meeting/profile-initialized"
         RECORDING_TRANSCRIBER_TASK = "recording-transcriber/task"
         RECORDING_TRANSCRIBER_MODEL = "recording-transcriber/model"
         RECORDING_TRANSCRIBER_LANGUAGE = "recording-transcriber/language"

@@ -45,6 +45,7 @@ from buzz.transcriber.transcriber import (
     Task,
 )
 from buzz.translator import Translator
+from buzz.meeting_translator import MeetingTranslator, meeting_mode_enabled
 from buzz.widgets.audio_devices_combo_box import AudioDevicesComboBox
 from buzz.widgets.audio_meter_widget import AudioMeterWidget
 from buzz.widgets.model_download_progress_dialog import ModelDownloadProgressDialog
@@ -99,17 +100,26 @@ class RecordingTranscriberWidget(QWidget):
             self.setWindowFlags(flags)
 
     def _init_state(self) -> None:
+        self.meeting_mode = meeting_mode_enabled()
+        self._meeting_segment_id = 0
+        self._meeting_captions = {}
+        self._meeting_pending = set()
+        self._meeting_accepting = False
         self.translation_thread = None
         self.translator = None
         self.transcripts = []
         self.translations = []
         self.current_status = self.RecordingStatus.STOPPED
         self.setWindowTitle(_("Live Recording"))
+        if self.meeting_mode:
+            self.setWindowTitle("Buzz · Teams 中文字幕")
 
     def _load_settings(self) -> tuple[list[ModelType], str]:
         self.settings = Settings()
         self.transcriber_mode = list(RecordingTranscriberMode)[
             self.settings.value(key=Settings.Key.RECORDING_TRANSCRIBER_MODE, default_value=0)]
+        if self.meeting_mode:
+            self.transcriber_mode = RecordingTranscriberMode.APPEND_BELOW
 
         default_language = self.settings.value(
             key=Settings.Key.RECORDING_TRANSCRIBER_LANGUAGE, default_value=""
@@ -211,9 +221,20 @@ class RecordingTranscriberWidget(QWidget):
         self.audio_meter_widget = AudioMeterWidget(self)
 
         self.microphone_label = QLabel(_("Microphone:"))
+        if self.meeting_mode:
+            self.microphone_label.setText("会议音频输入：")
+            self.meeting_status_label = QLabel("就绪 · 请选择会议音频输入后开始录音", self)
+            self.meeting_status_label.setWordWrap(True)
+            advanced = self.transcription_options_group_box.advanced_settings_dialog
+            advanced.recording_mode_combo.setCurrentIndex(0)
+            advanced.recording_mode_combo.setEnabled(False)
+            advanced.transcription_step_label.show()
+            advanced.transcription_step_spin_box.show()
 
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
+        if self.meeting_mode:
+            layout.addWidget(self.meeting_status_label)
 
         recording_options_layout = QFormLayout()
         recording_options_layout.addRow(self.microphone_label, self.audio_devices_combo_box)
@@ -581,6 +602,11 @@ class RecordingTranscriberWidget(QWidget):
         )
         logging.debug(f"Device sample rate: {self.device_sample_rate}")
 
+        # The meeting window opens its audio input only after Record is clicked.
+        # RecordingTranscriber supplies the live meter while recording.
+        if self.meeting_mode:
+            return
+
         self.recording_amplitude_listener = RecordingAmplitudeListener(
             input_device_index=self.selected_device_id, parent=self
         )
@@ -621,6 +647,10 @@ class RecordingTranscriberWidget(QWidget):
             self.presentation_options_bar.hide()
 
     def start_recording(self):
+        if self.meeting_mode:
+            self._meeting_captions.clear()
+            self._meeting_pending.clear()
+            self.meeting_status_label.setText("正在准备语音识别…")
         self.record_button.setDisabled(True)
         self.transcripts = []
         self.translations = []
@@ -681,6 +711,11 @@ class RecordingTranscriberWidget(QWidget):
         self.transcription_thread.finished.connect(
             lambda: setattr(self, 'transcription_thread', None)
         )
+        if self.meeting_mode:
+            self.transcription_thread.finished.connect(self._on_meeting_worker_finished)
+            self.transcriber.status_changed.connect(self._on_meeting_status)
+            self.transcriber.audio_dropped.connect(self._on_meeting_audio_dropped)
+            self._meeting_accepting = True
 
         self.transcriber.transcription.connect(self.on_next_transcription)
         self.transcriber.amplitude_changed.connect(
@@ -709,7 +744,8 @@ class RecordingTranscriberWidget(QWidget):
         if self.transcription_options.enable_llm_translation:
             self.translation_thread = QThread()
 
-            self.translator = Translator(
+            translator_class = MeetingTranslator if self.meeting_mode else Translator
+            self.translator = translator_class(
                 self.transcription_options,
                 self.transcription_options_group_box.advanced_settings_dialog,
             )
@@ -730,7 +766,14 @@ class RecordingTranscriberWidget(QWidget):
                 lambda: setattr(self, "translator", None)
             )
 
-            self.translator.translation.connect(self.on_next_translation)
+            if self.meeting_mode:
+                self.translator.translation.connect(self._on_meeting_translation)
+                self.translator.partial_translation.connect(self._on_meeting_partial)
+                self.translator.error.connect(self._on_meeting_translation_error)
+                self.translator.status.connect(self._on_meeting_status)
+                self.translation_thread.finished.connect(self._on_meeting_worker_finished)
+            else:
+                self.translator.translation.connect(self.on_next_translation)
 
             self.translation_thread.start()
 
@@ -756,6 +799,9 @@ class RecordingTranscriberWidget(QWidget):
         self.record_button.set_stopped()
         self.record_button.setEnabled(True)
         self.current_status = self.RecordingStatus.STOPPED
+        if self.meeting_mode and (self.transcription_thread is not None or
+                                  self.translation_thread is not None):
+            self.record_button.setEnabled(False)
         self.transcription_options_group_box.setEnabled(True)
         self.audio_devices_combo_box.setEnabled(True)
         self.microphone_label.setEnabled(True)
@@ -967,7 +1013,17 @@ class RecordingTranscriberWidget(QWidget):
             return
 
         if self.translator is not None:
-            self.translator.enqueue(text)
+            if self.meeting_mode:
+                if self._meeting_accepting:
+                    self._meeting_segment_id += 1
+                    segment_id = self._meeting_segment_id
+                    self._meeting_pending.add(segment_id)
+                    self._meeting_captions[segment_id] = "…"
+                    accepted = self.translator.enqueue(text, segment_id)
+                    if not accepted and segment_id in self._meeting_pending:
+                        self._on_meeting_translation_error("翻译未启动或队列已满。", segment_id)
+            else:
+                self.translator.enqueue(text)
 
         if self.transcriber_mode == RecordingTranscriberMode.APPEND_BELOW:
             self.transcription_text_box.moveCursor(QTextCursor.MoveOperation.End)
@@ -1033,6 +1089,57 @@ class RecordingTranscriberWidget(QWidget):
                 )
             except Exception as e:
                 logging.error(f"Transcript upload failed: {str(e)}")
+
+    def _on_meeting_status(self, message: str):
+        if self._meeting_accepting:
+            self.meeting_status_label.setText(message)
+
+    def _on_meeting_audio_dropped(self, samples: int):
+        self._on_meeting_status("识别跟不上音频，已有声音丢失；请停止后选择更小的模型。")
+
+    def _render_meeting_captions(self):
+        # Keep the visible caption history bounded; final exports remain separate.
+        while len(self._meeting_captions) > 400:
+            del self._meeting_captions[next(iter(self._meeting_captions))]
+        text = self.transcription_options.line_separator.join(self._meeting_captions.values())
+        self.translation_text_box.setPlainText(text)
+        self.translation_text_box.moveCursor(QTextCursor.MoveOperation.End)
+        if self.presentation_window and self.presentation_window.isVisible():
+            self.presentation_window.update_translations(text)
+
+    def _on_meeting_partial(self, text: str, segment_id: int):
+        if segment_id not in self._meeting_pending or not self._meeting_accepting:
+            return
+        self._meeting_captions[segment_id] = text
+        self._render_meeting_captions()
+
+    def _on_meeting_translation(self, text: str, segment_id: int):
+        if segment_id not in self._meeting_pending or not self._meeting_accepting:
+            return
+        self._on_meeting_partial(text, segment_id)
+        self._meeting_pending.discard(segment_id)
+        if self.export_enabled and self.translation_export_file:
+            if self.export_file_type == "csv":
+                self.write_csv_export(self.translation_export_file, text, self.export_max_entries)
+            else:
+                self.write_txt_export(self.translation_export_file, text, "a",
+                                      self.export_max_entries, self.transcription_options.line_separator)
+
+    def _on_meeting_translation_error(self, message: str, segment_id: int):
+        if segment_id not in self._meeting_pending or not self._meeting_accepting:
+            return
+        current = self._meeting_captions.get(segment_id, "")
+        self._meeting_captions[segment_id] = (current if current != "…" else "") + f" [{message}]"
+        self._meeting_pending.discard(segment_id)
+        self._render_meeting_captions()
+        self.meeting_status_label.setText(message)
+
+    def _on_meeting_worker_finished(self):
+        if self.transcription_thread is None and self.translation_thread is None:
+            if self._closing:
+                self.close()
+            else:
+                self.record_button.setEnabled(True)
 
     def on_next_translation(self, text: str, _: Optional[int] = None):
         if len(text) == 0:
@@ -1101,6 +1208,14 @@ class RecordingTranscriberWidget(QWidget):
                 logging.error(f"Translation upload failed: {str(e)}")
 
     def stop_recording(self):
+        if self.meeting_mode:
+            self._meeting_accepting = False
+            for segment_id in self._meeting_pending:
+                current = self._meeting_captions.get(segment_id, "")
+                self._meeting_captions[segment_id] = (current if current != "…" else "") + " [已取消]"
+            self._meeting_pending.clear()
+            self._render_meeting_captions()
+            self.meeting_status_label.setText("已停止 · 未完成的翻译已取消")
         if self.transcriber is not None:
             self.transcriber.stop_recording()
 
@@ -1117,6 +1232,8 @@ class RecordingTranscriberWidget(QWidget):
         self.transcription_stopped.emit()
 
     def on_transcriber_error(self, error: str):
+        if self.meeting_mode:
+            self.stop_recording()
         self.reset_record_button()
         self.set_recording_status_stopped()
         self.reset_recording_amplitude_listener()
@@ -1160,6 +1277,13 @@ class RecordingTranscriberWidget(QWidget):
         self.audio_meter_widget.update_amplitude(amplitude)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.meeting_mode and (self.transcription_thread is not None or
+                                  self.translation_thread is not None):
+            event.ignore()
+            if not self._closing:
+                self._closing = True
+                self.stop_recording()
+            return
         if self._closing:
             # Second call after deferred close — proceed normally
             self._do_close()

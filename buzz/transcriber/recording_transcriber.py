@@ -29,6 +29,7 @@ from buzz.settings.settings import Settings
 from buzz.transcriber.transcriber import TranscriptionOptions, Task, DEFAULT_WHISPER_TEMPERATURE
 from buzz.transformers_whisper import TransformersTranscriber
 from buzz.settings.recording_transcriber_mode import RecordingTranscriberMode
+from buzz.meeting_translator import meeting_mode_enabled
 
 import whisper
 import faster_whisper
@@ -41,6 +42,8 @@ class RecordingTranscriber(QObject):
     amplitude_changed = pyqtSignal(float)
     average_amplitude_changed = pyqtSignal(float)
     queue_size_changed = pyqtSignal(int)
+    audio_dropped = pyqtSignal(int)
+    status_changed = pyqtSignal(str)
     is_running = False
     SAMPLE_RATE = whisper_audio.SAMPLE_RATE
 
@@ -55,6 +58,8 @@ class RecordingTranscriber(QObject):
     ) -> None:
         super().__init__(parent)
         self.settings = Settings()
+        self.meeting_mode = meeting_mode_enabled()
+        self._last_drop_report = 0.0
         self.transcriber_mode = list(RecordingTranscriberMode)[
             self.settings.value(key=Settings.Key.RECORDING_TRANSCRIBER_MODE, default_value=0)]
         self.transcription_options = transcription_options
@@ -63,6 +68,9 @@ class RecordingTranscriber(QObject):
         self.sample_rate = sample_rate if sample_rate is not None else whisper_audio.SAMPLE_RATE
         self.model_path = model_path
         self.n_batch_samples = int(5 * self.sample_rate)  # 5 seconds
+        if self.meeting_mode:
+            self.transcriber_mode = RecordingTranscriberMode.APPEND_BELOW
+            self.n_batch_samples = int(transcription_options.transcription_step * self.sample_rate)
         self.keep_sample_seconds = 0.15
         if self.transcriber_mode == RecordingTranscriberMode.APPEND_AND_CORRECT:
             self.n_batch_samples = int(transcription_options.transcription_step * self.sample_rate)
@@ -395,6 +403,9 @@ class RecordingTranscriber(QObject):
         with self.mutex:
             if self.queue.size < self.max_queue_size:
                 self.queue = np.append(self.queue, chunk)
+            elif self.meeting_mode and time.monotonic() - self._last_drop_report > 1:
+                self._last_drop_report = time.monotonic()
+                self.audio_dropped.emit(chunk.size)
 
     @staticmethod
     def find_silence_cut_point(samples: np.ndarray, sample_rate: int,
@@ -453,10 +464,11 @@ class RecordingTranscriber(QObject):
         logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("openai").setLevel(logging.WARNING)
 
-        self.transcription.emit(_("Starting Whisper.cpp..."))
+        progress = self.status_changed if self.meeting_mode else self.transcription
+        progress.emit(_("Starting Whisper.cpp..."))
 
         if platform.system() == "Darwin" and platform.machine() == "arm64":
-            self.transcription.emit(_("First time use of a model may take up to several minutest to load."))
+            progress.emit(_("First time use of a model may take up to several minutest to load."))
 
         self.process = None
 
@@ -526,7 +538,7 @@ class RecordingTranscriber(QObject):
             time.sleep(0.1)
 
         if self.process is not None and self.process.poll() is None:
-            self.transcription.emit(_("Starting transcription..."))
+            progress.emit(_("Starting transcription..."))
             logging.debug(f"Whisper server started successfully.")
             logging.debug(f"Model: {self.model_path}")
         else:
@@ -534,7 +546,7 @@ class RecordingTranscriber(QObject):
             stderr_output = b"".join(self._stderr_lines).decode(errors="replace")
             logging.error(f"Whisper server failed to start. Error: {stderr_output}")
 
-            self.transcription.emit(_("Whisper server failed to start. Check logs for details."))
+            progress.emit(_("Whisper server failed to start. Check logs for details."))
 
             if "ErrorOutOfDeviceMemory" in stderr_output:
                 message = _(
@@ -543,7 +555,7 @@ class RecordingTranscriber(QObject):
                     "To force CPU mode use BUZZ_FORCE_CPU=TRUE environment variable."
                 )
                 logging.error(message)
-                self.transcription.emit(message)
+                progress.emit(message)
 
             return
 
