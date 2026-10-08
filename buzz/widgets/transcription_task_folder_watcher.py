@@ -5,17 +5,14 @@ from typing import Dict
 from PyQt6.QtCore import QFileSystemWatcher, pyqtSignal, QObject
 
 from buzz.store.keyring_store import Key, get_password
-from buzz.transcriber.transcriber import FileTranscriptionTask
+from buzz.transcriber.transcriber import (
+    FileTranscriptionTask,
+    SUPPORTED_EXTENSIONS,
+)
 from buzz.model_loader import ModelDownloader
 from buzz.widgets.preferences_dialog.models.folder_watch_preferences import (
     FolderWatchPreferences,
 )
-
-# Supported media file extensions (audio and video)
-SUPPORTED_EXTENSIONS = {
-    ".mp3", ".wav", ".m4a", ".ogg", ".opus", ".flac",  # audio
-    ".mp4", ".webm", ".ogm", ".mov", ".mkv", ".avi", ".wmv",  # video
-}
 
 
 class TranscriptionTaskFolderWatcher(QFileSystemWatcher):
@@ -115,6 +112,10 @@ class TranscriptionTaskFolderWatcher(QFileSystemWatcher):
                     output_directory=output_directory,
                     source=FileTranscriptionTask.Source.FOLDER_WATCH,
                     delete_source_file=self.preferences.delete_processed_files,
+                    identify_speakers=self.preferences.identify_speakers,
+                    speaker_diarizer=self.preferences.speaker_diarizer,
+                    speaker_count=self.preferences.speaker_count,
+                    merge_speaker_sentences=self.preferences.merge_speaker_sentences,
                 )
                 self.task_found.emit(task)
                 self.paths_emitted[file_path] = (

@@ -5,6 +5,7 @@ import plistlib
 import shlex
 import shutil
 import subprocess
+import tomllib
 
 
 def main():
@@ -43,7 +44,8 @@ def main():
         "CFBundleDisplayName": "Buzz Teams",
         "CFBundlePackageType": "APPL",
         "CFBundleVersion": "1",
-        "CFBundleShortVersionString": "1.4.5",
+        "CFBundleShortVersionString": tomllib.loads(
+            (root / "pyproject.toml").read_text())["project"]["version"],
         "CFBundleIconFile": "buzz.icns",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": "读取所选音频输入并生成会议中文字幕。",

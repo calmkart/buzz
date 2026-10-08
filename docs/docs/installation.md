@@ -4,11 +4,14 @@ sidebar_position: 2
 ---
 
 To install Buzz, download the latest version for your operating
-system. Buzz is available on **Mac** (Intel and Apple silicon), **Windows**, and **Linux**.
+system. Buzz is available on **Mac**, **Windows**, and **Linux**.
 
 ### macOS
 
 Download the `.dmg` from the [SourceForge](https://sourceforge.net/projects/buzz-captions/files/).
+
+> **Intel Macs:** Buzz now requires Apple silicon. The last version to support
+> Intel Macs is **1.4.5**.
 
 ### Windows
 
@@ -48,3 +51,8 @@ On Linux install system dependencies you may be missing
 sudo apt-get install --no-install-recommends libyaml-dev libtbb-dev libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-shape0 libxcb-cursor0 libportaudio2 gettext libpulse0 ffmpeg
 ```
 On versions prior to Ubuntu 24.04 install `sudo apt-get install --no-install-recommends libegl1-mesa`
+
+
+## CUDA GPU Acceleration
+
+Since version `1.4.6` Nvidia CUDA GPU acceleration is no longer included in base package of the Buzz and has to be installed separately on Linux and Windows. You will get a prompt to do so if Nvidia GPU is detected, but you can also install CUDA support manually by going to `Help -> About Buzz -> Install CUDA Acceleration`. CUDA is not needed for `whisper.cpp` and if you do not have Nvidia GPU.

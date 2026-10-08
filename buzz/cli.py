@@ -36,6 +36,14 @@ class CommandLineModelType(enum.Enum):
     OPEN_AI_WHISPER_API = "openaiapi"
 
 
+class CommandLineDiarizer(enum.Enum):
+    MSDD = "msdd"
+    SORTFORMER = "sortformer"
+
+
+DEFAULT_DIARIZER = CommandLineDiarizer.MSDD.value
+
+
 def parse_command_line(app: Application):
     parser = QCommandLineParser()
     try:
@@ -73,6 +81,12 @@ def _add_command_options(parser: QCommandLineParser):
         'Hugging Face model ID. Use only when --model-type is huggingface. Example: "openai/whisper-tiny"',
         "id",
     )
+    custom_model_id_option = QCommandLineOption(
+        ["custom-model-id"],
+        "Id of a registered Whisper.cpp custom model. Use only when --model-type is "
+        "whispercpp and --model-size is custom.",
+        "id",
+    )
     language_option = QCommandLineOption(
         ["l", "language"],
         f'Language code. Allowed: {", ".join(sorted([k + " (" + LANGUAGES[k].title() + ")" for k in LANGUAGES]))}. Leave empty to detect language.',
@@ -87,6 +101,20 @@ def _add_command_options(parser: QCommandLineParser):
     )
     extract_speech_option = QCommandLineOption(
         ["e", "extract-speech"], "Extract speech from audio before transcribing."
+    )
+    identify_speakers_option = QCommandLineOption(
+        ["identify-speakers"], "Identify speakers in the audio."
+    )
+    speaker_count_option = QCommandLineOption(
+        ["speaker-count"],
+        "Number of speakers in the audio. Implies --identify-speakers.",
+        "count",
+    )
+    speaker_diarizer_option = QCommandLineOption(
+        ["speaker-diarizer"],
+        f"Speaker diarizer algorithm. Allowed: {join_values(CommandLineDiarizer)}. Default: {DEFAULT_DIARIZER}. Implies --identify-speakers.",
+        "diarizer",
+        DEFAULT_DIARIZER,
     )
     open_ai_access_token_option = QCommandLineOption(
         "openai-token",
@@ -107,10 +135,14 @@ def _add_command_options(parser: QCommandLineParser):
             model_type_option,
             model_size_option,
             hugging_face_model_id_option,
+            custom_model_id_option,
             language_option,
             initial_prompt_option,
             word_timestamp_option,
             extract_speech_option,
+            identify_speakers_option,
+            speaker_count_option,
+            speaker_diarizer_option,
             open_ai_access_token_option,
             output_directory_option,
             srt_option,
@@ -125,10 +157,14 @@ def _add_command_options(parser: QCommandLineParser):
         "model_type": model_type_option,
         "model_size": model_size_option,
         "hugging_face_model_id": hugging_face_model_id_option,
+        "custom_model_id": custom_model_id_option,
         "language": language_option,
         "initial_prompt": initial_prompt_option,
         "word_timestamps": word_timestamp_option,
         "extract_speech": extract_speech_option,
+        "identify_speakers": identify_speakers_option,
+        "speaker_count": speaker_count_option,
+        "speaker_diarizer": speaker_diarizer_option,
         "openai_token": open_ai_access_token_option,
         "output_directory": output_directory_option,
         "srt": srt_option,
@@ -142,6 +178,7 @@ def _resolve_model(
     model_type: CommandLineModelType,
     model_size: WhisperModelSize,
     hugging_face_model_id: str,
+    custom_model_id: str = "",
 ):
     if hugging_face_model_id == "" and model_type == CommandLineModelType.HUGGING_FACE:
         raise CommandLineError("--hfid is required when --model-type is huggingface")
@@ -149,6 +186,7 @@ def _resolve_model(
         model_type=ModelType[model_type.name],
         whisper_model_size=model_size,
         hugging_face_model_id=hugging_face_model_id,
+        custom_model_id=custom_model_id or None,
     )
     model_path = model.get_local_model_path()
     if model_path is None:
@@ -166,6 +204,9 @@ def _add_transcription_tasks(
     transcription_options: TranscriptionOptions,
     output_formats: typing.Set[OutputFormat],
     output_directory: str = "",
+    identify_speakers: bool = False,
+    speaker_count: typing.Optional[int] = None,
+    speaker_diarizer: str = DEFAULT_DIARIZER,
 ):
     for file_path in file_paths:
         path_is_url = is_url(file_path)
@@ -184,6 +225,9 @@ def _add_transcription_tasks(
             transcription_options=transcription_options,
             file_transcription_options=file_transcription_options,
             output_directory=output_directory if output_directory != "" else None,
+            identify_speakers=identify_speakers,
+            speaker_count=speaker_count,
+            speaker_diarizer=speaker_diarizer,
         )
         app.add_task(transcription_task, quit_on_complete=True)
 
@@ -217,7 +261,10 @@ def _handle_add_command(app: Application, parser: QCommandLineParser):
     model_size = parse_enum_option(opts["model_size"], parser, WhisperModelSize)
 
     model_path, model = _resolve_model(
-        model_type, model_size, parser.value(opts["hugging_face_model_id"])
+        model_type,
+        model_size,
+        parser.value(opts["hugging_face_model_id"]),
+        parser.value(opts["custom_model_id"]),
     )
 
     language = parser.value(opts["language"])
@@ -244,6 +291,22 @@ def _handle_add_command(app: Application, parser: QCommandLineParser):
         openai_access_token=openai_access_token,
     )
 
+    identify_speakers = (
+        parser.isSet(opts["identify_speakers"])
+        or parser.isSet(opts["speaker_count"])
+        or parser.isSet(opts["speaker_diarizer"])
+    )
+
+    speaker_count_str = parser.value(opts["speaker_count"])
+    speaker_count = None
+    if speaker_count_str:
+        try:
+            speaker_count = int(speaker_count_str)
+        except ValueError:
+            raise CommandLineError("--speaker-count must be an integer")
+
+    diarizer = parse_enum_option(opts["speaker_diarizer"], parser, CommandLineDiarizer).value
+
     _add_transcription_tasks(
         app,
         file_paths,
@@ -251,6 +314,9 @@ def _handle_add_command(app: Application, parser: QCommandLineParser):
         transcription_options,
         output_formats,
         parser.value(opts["output_directory"]),
+        identify_speakers=identify_speakers,
+        speaker_count=speaker_count,
+        speaker_diarizer=diarizer,
     )
 
     if parser.isSet(opts["hide_gui"]):

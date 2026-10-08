@@ -1,5 +1,5 @@
 # Change also in pyproject.toml and buzz/__version__.py
-version := 1.4.5
+version := 1.4.6
 
 mac_app_path := ./dist/Buzz.app
 mac_zip_path := ./dist/Buzz-${version}-mac.zip
@@ -210,6 +210,7 @@ translation_po_all:
 	$(MAKE) translation_po locale=de_DE
 	$(MAKE) translation_po locale=en_US
 	$(MAKE) translation_po locale=es_ES
+	$(MAKE) translation_po locale=fr
 	$(MAKE) translation_po locale=it_IT
 	$(MAKE) translation_po locale=ja_JP
 	$(MAKE) translation_po locale=lv_LV
